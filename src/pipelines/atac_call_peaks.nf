@@ -103,4 +103,7 @@ workflow atac_call_peaks {
     main:
         peaks = call_peaks(data.merged_dataset)
         make_cell_by_peak_mat(data.merged_dataset, peaks)
+
+    emit:
+        peak_matrix = make_cell_by_peak_mat.out
 }

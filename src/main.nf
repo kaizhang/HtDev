@@ -2,6 +2,7 @@ nextflow.enable.dsl=2
 
 include { import_data } from './pipelines/import_data';
 include { atac_call_peaks } from './pipelines/atac_call_peaks';
+include { regulatory_network } from './pipelines/regulatory_network';
 
 workflow {
     data = import_data([
@@ -12,7 +13,12 @@ workflow {
         "atac_fragment_files": Channel.fromPath(params.atac_files)
     ])
 
-    atac_call_peaks([
+    peaks = atac_call_peaks([
         "merged_dataset": data.merged_atac_data
+    ])
+
+    regulatory_network([
+        "peak_matrix": peaks.peak_matrix,
+        "gene_matrix": data.merged_rna_data
     ])
 }

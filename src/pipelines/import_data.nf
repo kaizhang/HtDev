@@ -11,8 +11,6 @@ params.baseOutputDir = 'result/imported_data/'
 
 // Convert Seurat object to h5ad file
 process import_rna {
-    publishDir "${params.baseOutputDir}/RNA/"
-
     // inputs are rds files provided by Harris
     input:
     file(rds_file_excitatory)
@@ -69,6 +67,33 @@ process import_metadata {
     """
 }
 
+process add_meta_data {
+    publishDir "${params.baseOutputDir}/RNA/"
+
+    input:
+    file("input.h5ad")
+    file(metadata)
+
+    output:
+    file("RNA.h5ad")
+
+    """
+    #!/usr/bin/env python3
+    import snapatac2 as snap
+    import polars as pl
+    import numpy as np
+
+    metadata = pl.read_csv("${metadata}", sep='\t')
+    metadata = metadata[metadata['my.cell.type'].to_numpy() != None]
+    metadata = metadata[[s.name for s in metadata if s.null_count() == 0]]
+
+    data = snap.read("input.h5ad", mode='r').copy("RNA.h5ad")
+    idx_map = dict(zip(list(metadata["orig.ident"]), range(metadata.height)))
+    order = [idx_map[id] for id in data.obs['_index']]
+    data.obs = metadata[order, :]
+    data.close()
+    """
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // DNA data import and preprocessing
@@ -119,37 +144,27 @@ process qc_stat {
     from matplotlib import pyplot as plt
 
     data = snap.read_dataset("${dataset}", no_check=True, mode = 'r')
-    samples = np.unique(data.obs['sample'])
-    dfs = []
-    for sample in samples: 
-        select = data.obs['sample'] == sample 
-        df = pd.concat([
-            pd.DataFrame({
-                "value": data.adatas.obs['tsse'][select],
-                "metric": "TSSe",
-            }),
-            pd.DataFrame({
-                "value": data.adatas.obs['n_fragment'][select],
-                "metric": "#Fragment",
-            }),
-            pd.DataFrame({
-                "value": data.adatas.obs['frac_dup'][select],
-                "metric": "fraction duplicated",
-            }),
-        ])
-        df['sample'] = sample
-        dfs.append(df)
-    data.close()
-    df = pd.concat(dfs)
+    df = data.adatas.obs[:].to_pandas()
+    df['sample'] = data.obs['sample']
+    df['frac_dup'] = df['frac_dup'] * 100
+    df['n_fragment'] = np.log10(df['n_fragment'])
+    metrics = [
+        ("TSS enrichment", "tsse"),
+        ("log10(#fragments)", "n_fragment"),
+        ("% duplicated", "frac_dup")
+    ]
 
-    #sns.set_theme(style="whitegrid")
-    #sns.set(rc={'figure.figsize':(7.2,7.2)})
-    g = sns.catplot(
-        data=df, x='sample', y='value',
-        row='metric', kind='violin', sharey=False,
-    )
-    g.set_xticklabels(rotation=90)
+    fig, axes = plt.subplots(1, 3, figsize=(7.2, 8), sharey=True)
+    for i, (label, metric) in enumerate(metrics):
+        ax = sns.violinplot(
+            ax=axes[i], data=df, y='sample', x=metric, inner=None,
+            orient="h", scale="width"
+        )
+        ax.set(ylabel="", xlabel=label)
+    #ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right')
     plt.savefig("atac_qc.pdf")
+
+    data.close()
     """
 }
 
@@ -205,42 +220,27 @@ process merge_data {
     """
 }
 
+// Compute embedding using ATAC data
+process atac_embedding {
+    publishDir "result/Figures/QC/"
+
+    input:
+    file(h5ads)
+
+    output:
+    file("*.pdf")
+
+    """
+    #!/usr/bin/env python3
+    import snapatac2 as snap
+    data = snap.read_dataset("${h5ads}", no_check = True, mode='r')
+    data.close()
+    """
+}
+
+
+
 /*
-process call_peaks {
-    input:
-    val(dataset)
-
-    output:
-    val(dataset)
-
-    """
-    #!/usr/bin/env python3
-    import snapatac2 as snap
-    import os
-    #os.chdir("${dataset}")
-    data = snap.read_dataset("${dataset}/_dataset.h5ads", no_check = True)
-    snap.tl.call_peaks(data, group_by = "my.cell.type", q_value = 0.005)
-    """
-}
-
-process make_cell_by_peak_mat {
-    publishDir 'result'
-    cache 'lenient'
-    input:
-    val(dataset)
-
-    output:
-    path("peak_matrix.h5ad")
-
-    """
-    #!/usr/bin/env python3
-    import snapatac2 as snap
-
-    data = snap.read_dataset("${dataset}/_dataset.h5ads", no_check = True)
-    snap.pp.make_peak_matrix(data, file = "peak_matrix.h5ad")
-    """
-}
-
 process diff {
     publishDir 'result'
     cache 'lenient'
@@ -285,13 +285,6 @@ process export_counts {
     df.to_csv("accessibility.tsv", sep='\t')
     """
 }
-
-workflow {
-    prepare_rna_data()
-    metadata = prepare_meta_data()
-
-    make_cell_by_peak_mat(call_peaks(merged))
-}
 */
 
 
@@ -310,9 +303,12 @@ workflow import_data {
     */
 
     main:
-        import_rna(data.rds_file_excitatory, data.rds_file_inhibitory)
-
         metadata = import_metadata(data.metadata_excitatory, data.metadata_inhibitory)
+
+        add_meta_data(
+            import_rna(data.rds_file_excitatory, data.rds_file_inhibitory),
+            metadata
+        )
 
         atac_data = data.atac_fragment_files.map { file ->
             tuple(file.toString().split("/").reverse()[1], file)
@@ -324,5 +320,6 @@ workflow import_data {
         ) | qc_stat
 
     emit:
+        merged_rna_data = add_meta_data.out
         merged_atac_data = merge_data.out
 }
