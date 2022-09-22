@@ -19,6 +19,28 @@ process call_peaks {
     """
 }
 
+process output_peaks {
+    publishDir 'result/peaks/'
+    input:
+    path("peaks.tsv.gz")
+
+    output:
+    path("*.bed.gz")
+
+    """
+    #!/usr/bin/env python3
+    import polars as pl
+    import snapatac2 as snap
+    import gzip
+    df = pl.read_csv("peaks.tsv.gz", sep = '\t')
+    for name in df.columns[1:]:
+        with gzip.open(name + ".bed.gz", "wt") as f:
+            f.write(
+                '\\n'.join([x.replace("-", "\t").replace(":", "\t") for x in df['Peaks'][df[name]]])
+            )
+    """
+}
+
 process make_cell_by_peak_mat {
     publishDir 'result/peaks/'
 
@@ -42,53 +64,31 @@ process make_cell_by_peak_mat {
     """
 }
 
-/*
-process diff {
-    publishDir 'result'
-    cache 'lenient'
-    input:
-    val(dataset)
+process umap_embedding {
+    publishDir 'result/Figures/QC/'
 
-    output:
+    input:
     path("peak_matrix.h5ad")
 
-    """
-    #!/usr/bin/env python3
-    import snapatac2 as snap
-    data = snap.read_dataset("${dataset}/_dataset.h5ads", no_check = True)
-    snap.pp.make_peak_matrix(data, file = "peak_matrix.h5ad")
-    """
-}
-
-process export_counts {
-    publishDir 'result'
-    cache 'lenient'
-    input:
-    path(peak_matrix)
-
     output:
-    path("accessibility.tsv")
+    path("*.html")
 
     """
     #!/usr/bin/env python3
     import snapatac2 as snap
-    import pandas as pd
-    import numpy as np 
-    data = snap.read("${peak_matrix}", mode = "r")
-    rpkm = snap.tl.aggregate_X(
-        data,
-        group_by = "my.cell.type",
-        normalize = "RPKM",
-        inplace = False
-    )
-    df = pd.DataFrame(rpkm)
-    df.index = data.var_names
-    df = np.log2(df + 1)
-    df.to_csv("accessibility.tsv", sep='\t')
+    import numpy as np
+    import gzip
+
+    data = snap.read("peak_matrix.h5ad", mode='r').copy("peak_matrix_copy.h5ad")
+    snap.tl.spectral(data, sample_size=30000, features = None)
+    snap.pl.spectral_eigenvalues(data, interactive=False, out_file = "eigenvalues.pdf")
+    snap.tl.umap(data, use_dims = 15)
+    data.obs['neuron_type'] = [x.split('-')[0] for x in data.obs['my.cell.type']]
+    snap.pl.umap(data, color = 'neuron_type', out_file="ATAC_embedding_neuron_type.html")
+    snap.pl.umap(data, color = 'age', out_file = "ATAC_embedding_age.html")
+    data.close()
     """
 }
-*/
-
 
 ////////////////////////////////////////////////////////////////////////////////
 // Workflow definition
@@ -102,7 +102,10 @@ workflow atac_call_peaks {
 
     main:
         peaks = call_peaks(data.merged_dataset)
-        make_cell_by_peak_mat(data.merged_dataset, peaks)
+        output_peaks(peaks)
+        umap_embedding(
+            make_cell_by_peak_mat(data.merged_dataset, peaks)
+        )
 
     emit:
         peak_matrix = make_cell_by_peak_mat.out

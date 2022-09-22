@@ -83,6 +83,34 @@ process perform_regression {
     """
 }
 
+process find_motifs {
+    input:
+    path("input")
+
+    output:
+    path("network.p")
+
+    """
+    #!/usr/bin/env python3
+    import snapatac2 as snap
+    import numpy as np
+    import gzip
+    from pickle import dump, load
+    network = load(gzip.open("input", "rb"))
+    cutoff = np.quantile([e.regr_score for e in network.edges()], 0.9)
+    snap.tl.prune_network(
+        network,
+        edge_filter = lambda edge: edge.regr_score > cutoff and abs(edge.correlation_score) > 0.05,
+    )
+    snap.tl.add_tf_binding(
+        network = network,
+        motifs = snap.datasets.cis_bp(unique = True),
+        genome_fasta = snap.genome.mm10,
+    )
+    dump(network, gzip.open("network.p", "wb"))
+    """
+}
+
 process network_stat {
     publishDir "result/Figures/network/"
     input:
@@ -116,9 +144,10 @@ workflow regulatory_network {
 
     main:
         matrix_file = aggregate_cells(data.peak_matrix, data.gene_matrix)
-        perform_regression(
+        network = perform_regression(
             matrix_file,
             init_network(matrix_file)
-        ) | network_stat
-        
+        )
+        network_stat(network)
+        find_motifs(network)
 }

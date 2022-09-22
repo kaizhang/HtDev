@@ -220,73 +220,35 @@ process merge_data {
     """
 }
 
-// Compute embedding using ATAC data
-process atac_embedding {
-    publishDir "result/Figures/QC/"
+process make_bigwig {
+    publishDir "${params.baseOutputDir}/ATAC/bigwig/"
 
     input:
-    file(h5ads)
+    path(dataset)
 
     output:
-    file("*.pdf")
+    tuple path("cell_types"), path("cell_states")
 
     """
     #!/usr/bin/env python3
     import snapatac2 as snap
-    data = snap.read_dataset("${h5ads}", no_check = True, mode='r')
+    data = snap.read_dataset("${dataset}", no_check=True, mode = 'r')
+    snap.ex.export_bigwig(
+        data,
+        groupby = "my.cell.type",
+        resolution = 10,
+        out_dir = 'cell_types',
+    )
+    cell_states = data.obs['age'] + ": " + data.obs['my.cell.type']
+    snap.ex.export_bigwig(
+        data,
+        groupby = cell_states,
+        resolution = 100,
+        out_dir = 'cell_states',
+    )
     data.close()
     """
 }
-
-
-
-/*
-process diff {
-    publishDir 'result'
-    cache 'lenient'
-    input:
-    val(dataset)
-
-    output:
-    path("peak_matrix.h5ad")
-
-    """
-    #!/usr/bin/env python3
-    import snapatac2 as snap
-    data = snap.read_dataset("${dataset}/_dataset.h5ads", no_check = True)
-    snap.pp.make_peak_matrix(data, file = "peak_matrix.h5ad")
-    """
-}
-
-process export_counts {
-    publishDir 'result'
-    cache 'lenient'
-    input:
-    path(peak_matrix)
-
-    output:
-    path("accessibility.tsv")
-
-    """
-    #!/usr/bin/env python3
-    import snapatac2 as snap
-    import pandas as pd
-    import numpy as np 
-    data = snap.read("${peak_matrix}", mode = "r")
-    rpkm = snap.tl.aggregate_X(
-        data,
-        group_by = "my.cell.type",
-        normalize = "RPKM",
-        inplace = False
-    )
-    df = pd.DataFrame(rpkm)
-    df.index = data.var_names
-    df = np.log2(df + 1)
-    df.to_csv("accessibility.tsv", sep='\t')
-    """
-}
-*/
-
 
 ////////////////////////////////////////////////////////////////////////////////
 // Workflow definition
@@ -314,10 +276,12 @@ workflow import_data {
             tuple(file.toString().split("/").reverse()[1], file)
         } | import_atac
 
-        merge_data(
+        merged_data = merge_data(
             atac_data.collect { a, b -> ["\"${a}\"", "\"${b}\""] },
             metadata
-        ) | qc_stat
+        )
+        qc_stat(merged_data)
+        make_bigwig(merged_data)
 
     emit:
         merged_rna_data = add_meta_data.out

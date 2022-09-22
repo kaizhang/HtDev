@@ -3,6 +3,7 @@ nextflow.enable.dsl=2
 include { import_data } from './pipelines/import_data';
 include { atac_call_peaks } from './pipelines/atac_call_peaks';
 include { regulatory_network } from './pipelines/regulatory_network';
+include { differential_analysis } from './pipelines/differential_analysis';
 
 workflow {
     data = import_data([
@@ -20,5 +21,9 @@ workflow {
     regulatory_network([
         "peak_matrix": peaks.peak_matrix,
         "gene_matrix": data.merged_rna_data
+    ])
+
+    differential_analysis([
+        "peak_matrix": peaks.peak_matrix,
     ])
 }
