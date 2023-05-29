@@ -4,6 +4,9 @@ include { import_data } from './pipelines/import_data';
 include { atac_call_peaks } from './pipelines/atac_call_peaks';
 include { regulatory_network } from './pipelines/regulatory_network';
 include { differential_analysis } from './pipelines/differential_analysis';
+include { regional_analysis } from './pipelines/regional_analysis';
+include { stage_analysis } from './pipelines/stage_analysis';
+include { cell_maturation } from './pipelines/cell_type_maturation/main';
 
 workflow {
     data = import_data([
@@ -14,6 +17,7 @@ workflow {
         "atac_fragment_files": Channel.fromPath(params.atac_files)
     ])
 
+/*
     peaks = atac_call_peaks([
         "merged_dataset": data.merged_atac_data
     ])
@@ -26,4 +30,19 @@ workflow {
     differential_analysis([
         "peak_matrix": peaks.peak_matrix,
     ])
+
+    regional_analysis([
+        "peak_matrix": peaks.peak_matrix,
+    ])
+
+    stage_analysis([
+        "peak_matrix": peaks.peak_matrix,
+        "gene_matrix": data.merged_rna_data,
+    ])
+
+    cell_maturation([
+        "peak_matrix": peaks.peak_matrix,
+        "gene_matrix": data.merged_rna_data,
+    ])
+*/
 }

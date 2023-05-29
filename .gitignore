@@ -1,0 +1,5 @@
+*.nextflow*
+result
+work
+depends
+data

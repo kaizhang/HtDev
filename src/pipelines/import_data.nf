@@ -1,5 +1,4 @@
-/* Import and preprocess raw data files.
-*/
+// Import and preprocess raw data files.
 
 nextflow.enable.dsl=2
 
@@ -55,6 +54,7 @@ process import_metadata {
     import numpy as np
     import rpy2.robjects as robjects
     from rpy2.robjects import pandas2ri
+    from rpy2.rinterface import NA_Character
     readRDS = robjects.r['readRDS']
     meta1 = readRDS("${metadata_excitatory}")
     meta1 = pandas2ri.rpy2py_dataframe(meta1)
@@ -63,6 +63,7 @@ process import_metadata {
     df = pd.concat([meta1, meta2])
     df['orig.ident'] = df.index
     df.index = df['sample'] + "+" + np.array(list(map(lambda x: x.split("_")[-1], df.index)))
+    df = df.applymap(lambda x: None if x == NA_Character else x)
     df.to_csv("metadata.tsv.gz", index_label="ID", sep='\t')
     """
 }
@@ -84,12 +85,12 @@ process add_meta_data {
     import numpy as np
 
     metadata = pl.read_csv("${metadata}", sep='\t')
-    metadata = metadata[metadata['my.cell.type'].to_numpy() != None]
+    metadata = metadata.filter(metadata['my.cell.type'].to_numpy() != None)
     metadata = metadata[[s.name for s in metadata if s.null_count() == 0]]
 
-    data = snap.read("input.h5ad", mode='r').copy("RNA.h5ad")
+    data = snap.read("input.h5ad", backed='r').copy("RNA.h5ad")
     idx_map = dict(zip(list(metadata["orig.ident"]), range(metadata.height)))
-    order = [idx_map[id] for id in data.obs['_index']]
+    order = [idx_map[id] for id in data.obs_names]
     data.obs = metadata[order, :]
     data.close()
     """
@@ -115,12 +116,12 @@ process import_atac {
     import snapatac2 as snap
     data = snap.pp.import_data(
         "${datasetFile}",
-        "${file(gffFile)}",
-        snap.genome.GRCm38,
+        genome=snap.genome.GRCm38,
         sorted_by_barcode=False,
-        file = "${datasetID}.h5ad",
+        file="${datasetID}.h5ad",
         min_num_fragments=1000,
         min_tsse=3,
+        tempdir='./',
     )
     """
 }
@@ -143,7 +144,7 @@ process qc_stat {
     import pandas as pd
     from matplotlib import pyplot as plt
 
-    data = snap.read_dataset("${dataset}", no_check=True, mode = 'r')
+    data = snap.read_dataset("${dataset}", mode = 'r')
     df = data.adatas.obs[:].to_pandas()
     df['sample'] = data.obs['sample']
     df['frac_dup'] = df['frac_dup'] * 100
@@ -161,7 +162,6 @@ process qc_stat {
             orient="h", scale="width"
         )
         ax.set(ylabel="", xlabel=label)
-    #ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right')
     plt.savefig("atac_qc.pdf")
 
     data.close()
@@ -186,36 +186,17 @@ process merge_data {
     import numpy as np
     # merge .h5ad files
     files = ${dataset}
-    data = snap.create_dataset(
-        [(files[i], files[i+1]) for i in range(0, len(files), 2)],
-        storage="merged.h5ads",
-    )
+    data = snap.AnnDataSet([tuple(x) for x in files], filename="merged.h5ads")
+    data.obs_names = data.obs['sample'].to_numpy() + "+" + np.array(data.obs_names)
 
     # subset dataset
     metadata = pl.read_csv("${metadata}", sep='\t')
-    metadata = metadata[metadata['my.cell.type'].to_numpy() != None]
-
-    obs = data.obs[:]
-    obs.insert_at_idx(0, pl.Series("ID", obs['sample'] + "+" + obs['Cell']))
-    data.obs = obs
-
-    join = obs.join(metadata, on = "ID")
-    common_barcodes = set(join["ID"])
-    data_subset = data.subset(
-        [i in common_barcodes for i in obs["ID"]],
-        out = "merged",
-    )
+    metadata = metadata.filter(pl.col('my.cell.type').is_not_null()).filter(pl.col('ID').is_in(data.obs_names))
+    data_subset, idx_order = data.subset(metadata['ID'], out="merged")
+    metadata = metadata[idx_order, :]
+    metadata = metadata[[s.name for s in metadata if s.null_count() == 0]]
+    data_subset.obs = metadata
     data.close()
-
-    idx_map = dict(zip(
-        list(data_subset.obs["ID"]), range(data_subset.shape[0])
-    ))
-    order = np.argsort(np.array([idx_map[i] for i in join['ID']]))
-    new_obs = join[order, :]
-    new_obs = new_obs[:, [s.null_count() == 0 for s in new_obs]]
-
-    assert np.all(new_obs["ID"].to_numpy() == data_subset.obs["ID"])
-    data_subset.obs = new_obs
     data_subset.close()
     """
 }
@@ -232,19 +213,19 @@ process make_bigwig {
     """
     #!/usr/bin/env python3
     import snapatac2 as snap
-    data = snap.read_dataset("${dataset}", no_check=True, mode = 'r')
+    data = snap.read_dataset("${dataset}", mode = 'r')
     snap.ex.export_bigwig(
         data,
-        groupby = "my.cell.type",
-        resolution = 10,
-        out_dir = 'cell_types',
+        groupby="my.cell.type",
+        resolution=10,
+        out_dir='cell_types',
     )
     cell_states = data.obs['age'] + ": " + data.obs['my.cell.type']
     snap.ex.export_bigwig(
         data,
-        groupby = cell_states,
-        resolution = 100,
-        out_dir = 'cell_states',
+        groupby=cell_states,
+        resolution=100,
+        out_dir='cell_states',
     )
     data.close()
     """
@@ -272,14 +253,13 @@ workflow import_data {
             metadata
         )
 
-        atac_data = data.atac_fragment_files.map { file ->
-            tuple(file.toString().split("/").reverse()[1], file)
-        } | import_atac
+        atac_data = data.atac_fragment_files
+            | map { file -> tuple(file.toString().split("/").reverse()[1], file) }
+            | import_atac
 
         merged_data = merge_data(
-            atac_data.collect { a, b -> ["\"${a}\"", "\"${b}\""] },
-            metadata
-        )
+            atac_data.collect({ a, b -> ["\"${a}\"", "\"${b}\""]}, flat: false, sort: true),
+            metadata)
         qc_stat(merged_data)
         make_bigwig(merged_data)
 

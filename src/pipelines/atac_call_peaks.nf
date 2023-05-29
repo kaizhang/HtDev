@@ -12,8 +12,8 @@ process call_peaks {
     """
     #!/usr/bin/env python3
     import snapatac2 as snap
-    data = snap.read_dataset("${merged_data}", no_check = True, mode='r')
-    peaks = snap.tl.call_peaks(data, group_by = "my.cell.type", q_value = 0.005, inplace=False)
+    data = snap.read_dataset("${merged_data}", mode='r')
+    peaks = snap.tl.call_peaks(data, groupby="my.cell.type", q_value=0.005, inplace=False)
     data.close()
     peaks.write_csv("peaks.tsv.gz", sep = '\t')
     """
@@ -46,7 +46,7 @@ process make_cell_by_peak_mat {
 
     input:
     path(merged_data)
-    path(peak_file)
+    path("peaks.tsv")
 
     output:
     path("peak_matrix.h5ad")
@@ -54,12 +54,11 @@ process make_cell_by_peak_mat {
     """
     #!/usr/bin/env python3
     import snapatac2 as snap
-    import gzip
-    with gzip.open('${peak_file}', 'rt') as f:
+    with open("peaks.tsv", 'r') as f:
         f.readline()
         peaks = [line.strip().split('\t')[0] for line in f]
-    data = snap.read_dataset("${merged_data}", mode = 'r', no_check = True)
-    snap.pp.make_peak_matrix(data, use_rep = peaks, file = "peak_matrix.h5ad").close()
+    data = snap.read_dataset("${merged_data}", mode='r')
+    snap.pp.make_peak_matrix(data, use_rep=peaks, file="peak_matrix.h5ad").close()
     data.close()
     """
 }
@@ -79,14 +78,12 @@ process umap_embedding {
     import numpy as np
     import gzip
 
-    data = snap.read("peak_matrix.h5ad", mode='r').copy("peak_matrix_copy.h5ad")
-    snap.tl.spectral(data, sample_size=30000, features = None)
-    snap.pl.spectral_eigenvalues(data, interactive=False, out_file = "eigenvalues.pdf")
-    snap.tl.umap(data, use_dims = 15)
+    data = snap.read("peak_matrix.h5ad", backed=None)
+    snap.tl.spectral(data, features = None)
+    snap.tl.umap(data)
     data.obs['neuron_type'] = [x.split('-')[0] for x in data.obs['my.cell.type']]
     snap.pl.umap(data, color = 'neuron_type', out_file="ATAC_embedding_neuron_type.html")
     snap.pl.umap(data, color = 'age', out_file = "ATAC_embedding_age.html")
-    data.close()
     """
 }
 
